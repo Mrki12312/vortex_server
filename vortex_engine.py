@@ -3,18 +3,18 @@ import re
 def izvuci_univerzalni_sku(ime_artikla):
     """
     Izvlači jedinstvenu fabričku šifru modela (SKU) iz naziva artikla.
-    Za proizvod sa tvoje slike će izvući tačnu šifru: MDF3930295
+    Za proizvod sa tvoje slike će izvući tačnu šifru: 50X120CM
     """
     if not ime_artikla:
         return "NEPOZNAT_MODEL"
         
     tekst = ime_artikla.upper()
     
-    # Tražimo kombinacije slova i brojeva (šifre modela kao što je MDF3930295)
-    skovi_sablon = re.findall(r'\b[A-Z0-9]{4,12}\b', tekst)
+    # Tražimo kombinacije slova i brojeva (šifre modela kao što je 50X120CM)
+    skovi_sablon = re.findall(r'\b[A-Z0-9]{3,12}\b', tekst)
     if skovi_sablon:
         for stavka in skovi_sablon:
-            # Ako šifra sadrži bar jedan broj, to je sigurno model (npr. MDF3930295)
+            # Ako šifra sadrži bar jedan broj, to je sigurno model (npr. 50X120CM)
             if any(c.isdigit() for c in stavka):
                 return stavka
                 

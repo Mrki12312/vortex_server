@@ -8,12 +8,16 @@ from vortex_engine import izvuci_univerzalni_sku, izracunaj_vortex_cenu
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+BAZA_NAME = "vortex_network_v2.db"
+
 def inicijalizuj_globalnu_bazu():
-    conn = sqlite3.connect("vortex_network.db")
+    """Kreira novu strukturu koja omogućava da se paralelno ispišu cene sa Ananasa i Amazona"""
+    conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS skenirano_trziste (
-            artikal_id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artikal_id TEXT,
             ime TEXT,
             nadjena_cena REAL,
             sajt_izvora TEXT,
@@ -55,14 +59,17 @@ def pozadinska_sinhronizacija():
     artikal_id = f"SKU_{sku_kod}"
     trenutno_vreme = datetime.datetime.now()
     
-    conn = sqlite3.connect("vortex_network.db")
+    conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
+    
+    # ISPRAVLJENO: Koristi se klasičan INSERT umesto REPLACE da bi se sačuvala istorija svih sajtova
     cursor.execute("""
-        INSERT OR REPLACE INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
+        INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutni_link, trenutno_vreme))
     conn.commit()
     
+    # Pretraga jeftinije alternative za isti taj SKU sa drugih sajtova
     cursor.execute("""
         SELECT nadjena_cena, sajt_izvora, link_proizvoda FROM skenirano_trziste 
         WHERE artikal_id = ? AND sajt_izvora != ? AND nadjena_cena < ?
@@ -88,11 +95,9 @@ def pozadinska_sinhronizacija():
             
     return jsonify({"akcija": "nastavi_skeniranje"})
 
-# NOVA RUTA: Preko ovog endpoint-a tvoja ekstenzija ili spoljni okidač može bezbedno da probudi robota!
 @app.route("/api/vortex-probudi-robota", methods=["GET"])
 def probudi_pozadinskog_robota():
     from vortex_robot import pokreni_masovno_rudarenje
-    # Pokrećemo rudarenje, ali bez blokiranja glavnog servera
     import threading
     threading.Thread(target=pokreni_masovno_rudarenje).start()
     return jsonify({"status": "robot_je_pokrenut_u_pozadini"})
@@ -102,7 +107,7 @@ def mobilna_porudzbina():
     podaci = request.json
     if not podaci: return jsonify({"status": "greska"})
     
-    conn = sqlite3.connect("vortex_network.db")
+    conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO mreza_porudzbina (proizvod_ime, cena, kupac_ime, telefon, status, link_naruceno, link_jeftinije)
@@ -114,7 +119,7 @@ def mobilna_porudzbina():
 
 @app.route("/")
 def administrativni_panel():
-    conn = sqlite3.connect("vortex_network.db")
+    conn = sqlite3.connect(BAZA_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM skenirano_trziste ORDER BY vreme_skena DESC LIMIT 20")
