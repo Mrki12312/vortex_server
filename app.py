@@ -51,22 +51,18 @@ def pozadinska_sinhronizacija():
     if not ime_artikla or cena_na_ekranu == 0:
         return jsonify({"akcija": "nastavi_skeniranje"})
         
-    # Izvlačenje čiste šifre modela
     sku_kod = izvuci_univerzalni_sku(ime_artikla)
     artikal_id = f"SKU_{sku_kod}"
     trenutno_vreme = datetime.datetime.now()
     
     conn = sqlite3.connect("vortex_network.db")
     cursor = conn.cursor()
-    
-    # Upis u bazu pod jedinstvenim SKU-om
     cursor.execute("""
         INSERT OR REPLACE INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutni_link, trenutno_vreme))
     conn.commit()
     
-    # Pretraga jeftinije alternative za isti taj SKU
     cursor.execute("""
         SELECT nadjena_cena, sajt_izvora, link_proizvoda FROM skenirano_trziste 
         WHERE artikal_id = ? AND sajt_izvora != ? AND nadjena_cena < ?
@@ -91,6 +87,15 @@ def pozadinska_sinhronizacija():
             })
             
     return jsonify({"akcija": "nastavi_skeniranje"})
+
+# NOVA RUTA: Preko ovog endpoint-a tvoja ekstenzija ili spoljni okidač može bezbedno da probudi robota!
+@app.route("/api/vortex-probudi-robota", methods=["GET"])
+def probudi_pozadinskog_robota():
+    from vortex_robot import pokreni_masovno_rudarenje
+    # Pokrećemo rudarenje, ali bez blokiranja glavnog servera
+    import threading
+    threading.Thread(target=pokreni_masovno_rudarenje).start()
+    return jsonify({"status": "robot_je_pokrenut_u_pozadini"})
 
 @app.route("/api/vortex-mobilna-porudzbina", methods=["POST"])
 def mobilna_porudzbina():
@@ -134,35 +139,8 @@ def administrativni_panel():
     </body>
     </html>
     """
-# DODAJ OVO NA VRH APP.PY MEĐU OSTALE IMPORTE:
-import threading
-import time
-from vortex_robot import pokreni_masovno_rudarenje
 
-def pozadinski_tajmer_robota():
-    """Funkcija koja se izvršava u posebnoj niti i pokreće robota na svakih 6 sati"""
-    # Puštamo server da se prvo upali (pauza 30 sekundi)
-    time.sleep(30)
-    while True:
-        try:
-            pokreni_masovno_rudarenje()
-        except Exception as e:
-            print(f"[VORTEX TAJMER EROR] Robot je naišao na prepreku: {e}")
-        
-        # Pauza od 6 sati (6 sati * 60 minuta * 60 sekundi) pre sledećeg skeniranja
-        time.sleep(21600)
-
-# ULAZNA TAČKA ZA POKRETANJE
 if __name__ == "__main__":
     inicijalizuj_globalnu_bazu()
-    
-    # Pokrećemo robota u pozadinskoj niti da ne bi usporavao rad tvog sajta na Renderu
-    nit_robota = threading.Thread(target=pozadinski_tajmer_robota, daemon=True)
-    nit_robota.start()
-    
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
-
-if __name__ == "__main__":
-    inicijalizuj_globalnu_bazu()
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=port)
