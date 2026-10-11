@@ -1,34 +1,26 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import math
 import sqlite3
 import datetime
-import urllib.parse
+import os
+from vortex_engine import izvuci_univerzalni_sku, izracunaj_vortex_cenu
 
 app = Flask(__name__)
-CORS(app)  # Omogućava nesmetanu komunikaciju između telefona i servera
-
-# Tvoje centralne matematičke konstante za Vortex proračun
-BAZA_KRUGA = 2 * math.pi
-ZAKRIVLJENJE = 0.5
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 def inicijalizuj_globalnu_bazu():
-    """Kreira bazu podataka i tabele za skenirane artikle i porudžbine"""
     conn = sqlite3.connect("vortex_network.db")
     cursor = conn.cursor()
-    
-    # Tabela 1: Pamti sve cene koje su aplikacije sa telefona u pozadini skenirale sa interneta
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS skenirano_trziste (
             artikal_id TEXT PRIMARY KEY,
             ime TEXT,
             nadjena_cena REAL,
             sajt_izvora TEXT,
+            link_proizvoda TEXT,
             vreme_skena DATETIME
         )
     """)
-    
-    # Tabela 2: Čuva informacije o kupcima koji su kupili preko anđeo čuvar pop-up prozora
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS mreza_porudzbina (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,134 +29,112 @@ def inicijalizuj_globalnu_bazu():
             kupac_ime TEXT,
             telefon TEXT,
             status TEXT,
+            link_naruceno TEXT,
+            link_jeftinije TEXT,
             vreme_porudzbine DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
     conn.close()
 
-# ======================================================================
-# API ENDPOINT 1: Mobilna aplikacija konstantno šalje sirove podatke ovde
-# ======================================================================
 @app.route("/api/vortex-background-sync", methods=["POST"])
 def pozadinska_sinhronizacija():
     podaci = request.json
     if not podaci:
-        return jsonify({"akcija": "nastavi_skeniranje", "razlog": "prazan_paket"})
+        return jsonify({"akcija": "nastavi_skeniranje"})
         
     ime_artikla = podaci.get("ime_proizvoda", "").strip()
     cena_na_ekranu = float(podaci.get("cena", 0))
-    sajt = podaci.get("sajt", "Mobilni Uređaj")
+    sajt = podaci.get("sajt", "Skener")
+    trenutni_link = podaci.get("link", "")
     
-    # Ako je aplikacija pokupila prazan tekst ili nevalidne podatke, preskačemo
-    if not ime_artikla or len(ime_artikla) < 5:
+    if not ime_artikla or cena_na_ekranu == 0:
         return jsonify({"akcija": "nastavi_skeniranje"})
         
-    artikal_id = f"ART_{abs(hash(ime_artikla)) % 1000000}"
+    # Izvlačenje čiste šifre modela
+    sku_kod = izvuci_univerzalni_sku(ime_artikla)
+    artikal_id = f"SKU_{sku_kod}"
     trenutno_vreme = datetime.datetime.now()
     
-    # 1. Automatski skladištimo podatak koji je kupac skenirao za nas (izgradnja tvoje baze)
     conn = sqlite3.connect("vortex_network.db")
     cursor = conn.cursor()
+    
+    # Upis u bazu pod jedinstvenim SKU-om
     cursor.execute("""
-        INSERT OR REPLACE INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, vreme_skena)
-        VALUES (?, ?, ?, ?, ?)
-    """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutno_vreme))
+        INSERT OR REPLACE INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutni_link, trenutno_vreme))
     conn.commit()
+    
+    # Pretraga jeftinije alternative za isti taj SKU
+    cursor.execute("""
+        SELECT nadjena_cena, sajt_izvora, link_proizvoda FROM skenirano_trziste 
+        WHERE artikal_id = ? AND sajt_izvora != ? AND nadjena_cena < ?
+        ORDER BY nadjena_cena ASC LIMIT 1
+    """, (artikal_id, sajt, cena_na_ekranu))
+    
+    nadjena_jeftinija_ponuda = cursor.fetchone()
     conn.close()
     
-    print(f"[VORTEX MREŽA] Skener uhvatio: '{ime_artikla[:40]}...' | Cena na internetu: {cena_na_ekranu} RSD")
-    
-    # 2. LOGIKA ZA ANĐELA ČUVARA (Presretanje sa boljom cenom):
-    # Primenjujemo tvoj matematički model da spustimo cenu za 15% (dropship na nuli/minimalnoj marži)
-    vortex_cena = round(cena_na_ekranu * 0.85, 2) 
-    usteda = round(cena_na_ekranu - vortex_cena, 2)
-    
-    # Nalažemo telefonu da trenutno prekine korisnika i izbaci Pop-up prozor jer imamo uštedu
-    return jsonify({
-        "akcija": "PRESRRETNI_I_POKAZI_POPUP",
-        "ime": ime_artikla[:50],  # Skraćujemo naziv da lepo stane u prozor na telefonu
-        "cena": vortex_cena,
-        "usteda": usteda,
-        "artikal_id": artikal_id
-    })
+    if nadjena_jeftinija_ponuda:
+        cena_jeftinijeg = nadjena_jeftinija_ponuda[0]
+        link_jeftinijeg = nadjena_jeftinija_ponuda[2]
+        
+        proracun = izracunaj_vortex_cenu(cena_na_ekranu, cena_jeftinijeg)
+        if proracun["validno"]:
+            return jsonify({
+                "akcija": "PRESRRETNI_I_POKAZI_POPUP",
+                "ime": ime_artikla[:50],
+                "cena": proracun["vortex_cena"],
+                "usteda": proracun["usteda"],
+                "link_jeftinije": link_jeftinijeg
+            })
+            
+    return jsonify({"akcija": "nastavi_skeniranje"})
 
-# ======================================================================
-# API ENDPOINT 2: Kada kupac unese podatke u pop-up na telefonu i klikne Kupi
-# ======================================================================
 @app.route("/api/vortex-mobilna-porudzbina", methods=["POST"])
 def mobilna_porudzbina():
     podaci = request.json
-    if not podaci:
-        return jsonify({"status": "greska", "poruka": "Podaci nisu primljeni."})
-        
-    proizvod_ime = podaci.get("ime")
-    cena = podaci.get("cena")
-    kupac_ime = podaci.get("kupac")
-    telefon = podaci.get("telefon")
+    if not podaci: return jsonify({"status": "greska"})
     
     conn = sqlite3.connect("vortex_network.db")
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO mreza_porudzbina (proizvod_ime, cena, kupac_ime, telefon, status)
-        VALUES (?, ?, ?, ?, 'Novo / Čeka dropship slanje')
-    """, (proizvod_ime, cena, kupac_ime, telefon))
+        INSERT INTO mreza_porudzbina (proizvod_ime, cena, kupac_ime, telefon, status, link_naruceno, link_jeftinije)
+        VALUES (?, ?, ?, ?, 'Novo / Čeka slanje', ?, ?)
+    """, (podaci.get("ime"), podaci.get("cena"), podaci.get("kupac"), podaci.get("telefon"), podaci.get("link_naruceno"), podaci.get("link_jeftinije")))
     conn.commit()
     conn.close()
-    
-    print(f"[VORTEX PRODAJA] ⚡ NOVAC JE LEGAO! Kupac {kupac_ime} je naručio '{proizvod_ime}' za {cena} RSD!")
-    return jsonify({"status": "uspeh", "poruka": "Hvala vam! Vaš novčanik je uspešno sačuvan."})
+    return jsonify({"status": "uspeh"})
 
-# ======================================================================
-# RUTA 3: Tvoja administratorska kontrolna tabla (Da vidiš šta se skenira i poručuje)
-# ======================================================================
 @app.route("/")
 def administrativni_panel():
     conn = sqlite3.connect("vortex_network.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    
-    # Izvlačimo najnovije skenirane podatke sa svih telefona
     cursor.execute("SELECT * FROM skenirano_trziste ORDER BY vreme_skena DESC LIMIT 20")
     skenovi = cursor.fetchall()
-    
-    # Izvlačimo sve pristigle porudžbine od kupaca
     cursor.execute("SELECT * FROM mreza_porudzbina ORDER BY vreme_porudzbine DESC")
     porudzbine = cursor.fetchall()
-    
     conn.close()
     
-    # Vraćamo tekstualni pregled baze direktno u pretraživač radi lakšeg praćenja
+    porudzbine_html = "".join([f"<li>👤 <b>{p['kupac_ime']}</b> ({p['telefon']}) - {p['proizvod_ime']} za <span style='color:#27ae60'>{p['cena']} RSD</span><br>🔵 <a href='{p['link_naruceno']}' target='_blank' style='color:#0084ff;'>Skuplji link</a> | 🔴 <a href='{p['link_jeftinije']}' target='_blank' style='color:#ff4d4d; font-weight:bold;'>Kupi ovde (Jeftinije)</a></li>" for p in porudzbine]) if porudzbine else "<li>Nema novih porudžbina.</li>"
+    skenovi_html = "".join([f"<li>📡 SKU: {s['artikal_id']} | <a href='{s['link_proizvoda']}' target='_blank' style='color:#aaa;'>{s['ime'][:40]}...</a> | <b>{s['nadjena_cena']} RSD</b> ({s['sajt_izvora']})</li>" for s in skenovi]) if skenovi else "<li>Čeka se signal...</li>"
+    
     return f"""
     <html>
     <head><title>Vortex Kontrolni Centar</title></head>
     <body style="font-family: Arial; padding: 30px; background: #111; color: #eee;">
         <h1>⚡ Vortex Globalni Kontrolni Centar</h1>
         <hr style="border-color: #333;">
-        
         <div style="display: flex; gap: 30px;">
-            <div style="flex: 1; background: #222; padding: 20px; border-radius: 8px;">
-                <h2>🛒 Pristigle Porudžbine (Dropship sa terena)</h2>
-                <ul>
-                    {"".join([f"<li><b>{p['kupac_ime']}</b> ({p['telefon']}) - {p['proizvod_ime']} za <span style='color:#27ae60'>{p['cena']} RSD</span> [{p['status']}]</li>" for p in porudzbine]) if porudzbine else "<li>Nema novih porudžbina za sada.</li>"}
-                </ul>
-            </div>
-            
-            <div style="flex: 1; background: #222; padding: 20px; border-radius: 8px;">
-                <h2>📡 Uživo Skeniranje Tržišta (Mreža Korisnika)</h2>
-                <ul>
-                    {"".join([f"<li>Artikal: {s['ime'][:40]}... | Cena na netu: {s['nadjena_cena']} RSD ({s['vreme_skena']})</li>" for s in skenovi]) if skenovi else "<li>Čeka se prvi pozadinski signal sa telefona...</li>"}
-                </ul>
-            </div>
+            <div style="flex: 1; background: #222; padding: 20px; border-radius: 8px;"><h2>🛒 Pristigle Porudžbine</h2><ul>{porudzbine_html}</ul></div>
+            <div style="flex: 1; background: #222; padding: 20px; border-radius: 8px;"><h2>📡 Uživo Skeniranje Tržišta</h2><ul>{skenovi_html}</ul></div>
         </div>
     </body>
     </html>
     """
 
 if __name__ == "__main__":
-    import os
     inicijalizuj_globalnu_bazu()
-    
-    # Klaud servisi sami dodeljuju PORT, ako ga nema (lokalno), koristi se 5000
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
+    app.run(debug=False, host="0.0.0.0", port=5000)
