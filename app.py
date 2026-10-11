@@ -134,6 +134,34 @@ def administrativni_panel():
     </body>
     </html>
     """
+# DODAJ OVO NA VRH APP.PY MEĐU OSTALE IMPORTE:
+import threading
+import time
+from vortex_robot import pokreni_masovno_rudarenje
+
+def pozadinski_tajmer_robota():
+    """Funkcija koja se izvršava u posebnoj niti i pokreće robota na svakih 6 sati"""
+    # Puštamo server da se prvo upali (pauza 30 sekundi)
+    time.sleep(30)
+    while True:
+        try:
+            pokreni_masovno_rudarenje()
+        except Exception as e:
+            print(f"[VORTEX TAJMER EROR] Robot je naišao na prepreku: {e}")
+        
+        # Pauza od 6 sati (6 sati * 60 minuta * 60 sekundi) pre sledećeg skeniranja
+        time.sleep(21600)
+
+# ULAZNA TAČKA ZA POKRETANJE
+if __name__ == "__main__":
+    inicijalizuj_globalnu_bazu()
+    
+    # Pokrećemo robota u pozadinskoj niti da ne bi usporavao rad tvog sajta na Renderu
+    nit_robota = threading.Thread(target=pozadinski_tajmer_robota, daemon=True)
+    nit_robota.start()
+    
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     inicijalizuj_globalnu_bazu()
