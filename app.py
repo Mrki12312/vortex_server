@@ -9,7 +9,7 @@ import urllib.parse
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
-# CORS dozvoljava ekstenziji nesmetanu komunikaciju sa serverom sa bilo kog sajta
+# CORS je potpuno otvoren za stabilnu komunikaciju sa ekstenzijom
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 BAZA_NAME = "vortex_network_v3.db"
@@ -32,7 +32,7 @@ def lokalni_izvuci_sku(ime_artikla):
     stop_reci = {"SET", "SLIKA", "DELA", "PODNA", "LAMPA", "CRNA", "MODERNA", "ANANAS", "GIGATRON", "BIGBANG"}
     reci = [rec for rec in tekst.split() if rec not in stop_reci and len(rec) > 2]
     if reci:
-        return reci[0]
+        return reci
     return "NEPOZNAT_MODEL"
 
 def lokalni_izracunaj_vortex_cenu(cena_trenutna, cena_najniza_baza):
@@ -49,6 +49,7 @@ def lokalni_izracunaj_vortex_cenu(cena_trenutna, cena_najniza_baza):
         "usteda": usteda,
         "validno": usteda > 0
     }
+
 # ======================================================================
 # JEZGRO 2: LOGIKA INTEGRISANOG AMAZON ROBOTA (SCRAPER-A)
 # ======================================================================
