@@ -149,10 +149,6 @@ def inicijalizuj_globalnu_bazu():
     """)
     conn.commit()
     conn.close()
-
-    inicijalizuj_globalnu_bazu()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
 # ======================================================================
 # JEZGRO 4: FLASK RUTING I KONTROLNI PANEL
 # ======================================================================
