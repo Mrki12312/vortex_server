@@ -49,66 +49,72 @@ def lokalni_izracunaj_vortex_cenu(cena_trenutna, cena_najniza_baza):
         "usteda": usteda,
         "validno": usteda > 0
     }
-
 # ======================================================================
-# JEZGRO 2: LOGIKA INTEGRISANOG AMAZON ROBOTA (SCRAPER-A)
+# JEZGRO 2: LOGIKA INTEGRISANOG AMAZON ROBOTA (UNIVERZALNI REGEX SKREPER)
 # ======================================================================
 
 def lokalni_amazon_skreper(pun_naziv, artikal_id):
-    """Direktni robot sa Scrape.do tunelom koji garantovano prolazi zaštitu"""
+    """
+    Unapređeni robot koji koristi pametne filtere teksta (Regex)
+    da izvuče prvu cenu i link sa Amazona, bez obzira na strukturu HTML koda.
+    """
     siguran_naziv = urllib.parse.quote(pun_naziv)
     target_url = f"https://amazon.com{siguran_naziv}"
     api_url = f"https://scrape.do{API_TOKEN}&url={target_url}"
     
-    print(f"[VORTEX ROBOT] Pokrećem API sken na Amazonu za: {pun_naziv[:30]}")
+    print(f"[VORTEX ROBOT] Pokrećem napredni sken na Amazonu za: {pun_naziv[:30]}")
     
     try:
         odgovor = requests.get(api_url, timeout=25)
         trenutno_vreme = datetime.datetime.now()
         
         if odgovor.status_code != 200:
-            return f"API greška: status {odgovor.status_code}"
+            return f"API problem: status {odgovor.status_code}"
             
-        supa = BeautifulSoup(odgovor.text, "html.parser")
-        kartica = supa.find("div", {"data-component-type": "s-search-result"})
+        html_tekst = odgovor.text
         
+        # --- FILTRIRANJE CENE PREKO SVEODBUHVATNOG TEKSTUALNOG ŠABLONA ---
+        # Tražimo format cene koji Amazon uvek koristi u pozadini: npr. "price":{"amount":19.99} ili "US$ 19.99"
+        sablon_cene = re.search(r'"price":\s*\{\s*"amount":\s*([\d.]+)', html_tekst)
+        if not sablon_cene:
+            # Rezervni plan: Tražimo klasičan tekstualni dolarski iznos na stranici
+            sablon_cene = re.search(r'(?:\$|US\$)\s*(\d{1,4}\.\d{2})', html_tekst)
+            
+        # --- FILTRIRANJE PRVOG DIREKTNOG LINKA PROIZVODA ---
+        sablon_linka = re.search(r'href="(/[^"/]+/dp/[A-Z0-9]{10})', html_tekst)
+        
+        if sablon_cene:
+            cena_dolar = float(sablon_cene.group(1))
+            cena_rsd = round(cena_dolar * 108.0, 2) # Pretvaranje u dinare
+            
+            puni_link = "https://amazon.com" + sablon_linka.group(1) if sablon_linka else target_url
+            ime_sistema = f"Alternativa sa Amazona za {artikal_id}"
+            
+            conn = sqlite3.connect(BAZA_NAME)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (artikal_id, ime_sistema, cena_rsd, "amazon.com (Vortex Robot)", puni_link, trenutno_vreme))
+            conn.commit()
+            conn.close()
+            print(f"[ROBOT USPEH] Pametni filter upisao cenu: {cena_rsd} RSD")
+            return f"Uspeh! Upisana cena sa Amazona: {cena_rsd} RSD"
+            
+        # Ako Amazon zaista nema nikakav rezultat za taj tekstualni upit
         conn = sqlite3.connect(BAZA_NAME)
         cursor = conn.cursor()
-        
-        if kartica:
-            element_cene = kartica.find(class_="a-price-whole")
-            element_centi = kartica.find(class_="a-price-fraction")
-            element_linka = kartica.find("a", class_="a-link-normal s-no-outline")
-            element_naslova = kartica.find("h2")
-            
-            if element_cene and element_linka and element_naslova:
-                ceo_deo = "".join(c for c in element_cene.get_text() if c.isdigit())
-                centi_deo = "".join(c for c in element_centi.get_text() if c.isdigit()) if element_centi else "00"
-                
-                cena_dolar = float(f"{ceo_deo or 0}.{centi_deo}")
-                cena_rsd = round(cena_dolar * 108.0, 2)
-                puni_link = "https://amazon.com" + element_linka["href"]
-                ime_sa_amazona = element_naslova.get_text().strip()
-                
-                cursor.execute("""
-                    INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (artikal_id, ime_sa_amazona[:100], cena_rsd, "amazon.com (Vortex Robot)", puni_link, trenutno_vreme))
-                conn.commit()
-                conn.close()
-                return f"Uspeh! Upisana cena sa Amazona: {cena_rsd} RSD"
-        
-        # Ako nema poklapanja na Amazonu, upisujemo status da znaš da je robot pokrenut
         cursor.execute("""
             INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (artikal_id, "Artikal trenutno nije pronadjen na Amazonu", 0, "amazon.com (Nema na stanju)", target_url, trenutno_vreme))
+        """, (artikal_id, f"Nema poklapanja na Amazonu za: {pun_naziv[:20]}", 0, "amazon.com (Nema rezultata)", target_url, trenutno_vreme))
         conn.commit()
         conn.close()
-        return "Nije pronađeno na Amazonu."
+        return "Proizvod trenutno nije lociran na Amazonu."
         
     except Exception as e:
-        return f"Krah robota: {str(e)}"
+        print(f"[ROBOT GRESKA] Krah: {e}")
+        return f"Sistemska greška: {str(e)}"
 
 # ======================================================================
 # JEZGRO 3: KONEKCIJA BAZE I INICIJALIZACIJA
@@ -143,6 +149,10 @@ def inicijalizuj_globalnu_bazu():
     """)
     conn.commit()
     conn.close()
+
+    inicijalizuj_globalnu_bazu()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 # ======================================================================
 # JEZGRO 4: FLASK RUTING I KONTROLNI PANEL
 # ======================================================================
