@@ -3,7 +3,7 @@ from flask_cors import CORS
 import sqlite3
 import datetime
 import os
-from vortex_engine import izvuci_univerzalni_sku, izracunaj_vortex_cenu
+from vortex_engine import izvuci_univerzalni_sku
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -43,8 +43,7 @@ def inicijalizuj_globalnu_bazu():
 @app.route("/api/vortex-background-sync", methods=["POST"])
 def pozadinska_sinhronizacija():
     podaci = request.json
-    if not podaci:
-        return jsonify({"akcija": "nastavi_skeniranje"})
+    if not podaci: return jsonify({"akcija": "nastavi_skeniranje"})
         
     ime_artikla = podaci.get("ime_proizvoda", "").strip()
     cena_na_ekranu = float(podaci.get("cena", 0))
@@ -63,7 +62,7 @@ def pozadinska_sinhronizacija():
     cursor.execute("""
         INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
         VALUES (?, ?, ?, ?, ?, ?)
-    """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutni_link, trenutno_vreme))
+    """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenches_link, trenches_vreme))
     conn.commit()
     
     cursor.execute("""
@@ -76,36 +75,71 @@ def pozadinska_sinhronizacija():
     conn.close()
     
     if nadjena_jeftinija_ponuda:
-        cena_jeftinijeg = nadjena_jeftinija_ponuda
-        link_jeftinijeg = nadjena_jeftinija_ponuda
-        
-        proracun = izracunaj_vortex_cenu(cena_na_ekranu, cena_jeftinijeg)
-        if proracun["validno"]:
-            return jsonify({
-                "akcija": "PRESRRETNI_I_POKAZI_POPUP",
-                "ime": ime_artikla[:50],
-                "cena": proracun["vortex_cena"],
-                "usteda": proracun["usteda"],
-                "link_jeftinije": link_jeftinijeg
-            })
-            
+        return jsonify({
+            "akcija": "PRESRRETNI_I_POKAZI_POPUP",
+            "ime": ime_artikla[:50],
+            "cena": round(nadjena_jeftinija_ponuda[0] * 1.15, 2),
+            "usteda": round(cena_na_ekranu - (nadjena_jeftinija_ponuda[0] * 1.15), 2),
+            "link_jeftinije": nadjena_jeftinija_ponuda[2]
+        })
     return jsonify({"akcija": "nastavi_skeniranje"})
 
-# POPRAVLJENO: Sinhrona ruta koja drži konekciju otvorenom dok robot ne završi pretragu
 @app.route("/api/vortex-probudi-robota", methods=["GET"])
 def probudi_pozadinskog_robota():
     from vortex_robot import pokreni_masovno_rudarenje
+    # Pokrećemo funkciju koja odmah šalje nalog Scrape.do servisu i zatvara stranicu bez čekanja
+    izvestaj = pokreni_masovno_rudarenje()
+    return jsonify({"status": "zahtev_poslat_proksiju", "detalji": izvestaj})
+
+# NOVI WEBHOOK ENDPOINT: Ovde Scrape.do direktno ubacuje podatke u bazu kada završi sa Amazonom
+@app.route("/api/vortex-webhook", methods=["POST"])
+def vortex_webhook_prijem():
     try:
-        rezultat_robota = pokreni_masovno_rudarenje()
-        return jsonify({"status": "robot_je_zavrsio_pretragu", "detalji": rezultat_robota})
+        from bs4 import BeautifulSoup
+        html_sadrzaj = request.data.decode("utf-8")
+        artikal_id = request.args.get("artikal_id", "SKU_NEPOZNAT")
+        
+        supa = BeautifulSoup(html_sadrzaj, "html.parser")
+        kartica = supa.find("div", {"data-component-type": "s-search-result"})
+        
+        if kartica:
+            element_cene = kartica.find(class_="a-price-whole")
+            element_linka = kartica.find("a", class_="a-link-normal s-no-outline")
+            element_naslova = kartica.find("h2")
+            
+            if element_cene and element_linka and element_naslova:
+                ceo_deo = "".join(c for c in element_cene.get_text() if c.isdigit())
+                cena_rsd = round(float(ceo_deo or 0) * 108.0, 2)
+                puni_link = "https://amazon.com" + element_linka["href"]
+                ime_sa_amazona = element_naslova.get_text().strip()
+                
+                conn = sqlite3.connect(BAZA_NAME)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (artikal_id, ime_sa_amazona[:100], cena_rsd, "amazon.com (Vortex Robot)", puni_link, datetime.datetime.now()))
+                conn.commit()
+                conn.close()
+                return "OK", 200
+        
+        # Ako nije nađeno, upisujemo status direktno na panel
+        conn = sqlite3.connect(BAZA_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (artikal_id, "Artikal trenutno nije na stanju na Amazonu", 0, "amazon.com (Nema rezultata)", "https://amazon.com", datetime.datetime.now()))
+        conn.commit()
+        conn.close()
+        return "Nema rezultata", 200
     except Exception as e:
-        return jsonify({"status": "greska_u_radu_robota", "poruka": str(e)})
+        return str(e), 500
 
 @app.route("/api/vortex-mobilna-porudzbina", methods=["POST"])
 def mobilna_porudzbina():
     podaci = request.json
     if not podaci: return jsonify({"status": "greska"})
-    
     conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
     cursor.execute("""
