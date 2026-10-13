@@ -11,7 +11,6 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 BAZA_NAME = "vortex_network_v2.db"
 
 def inicijalizuj_globalnu_bazu():
-    """Kreira novu strukturu koja omogućava da se paralelno ispišu cene sa Ananasa i Amazona"""
     conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
     cursor.execute("""
@@ -61,18 +60,15 @@ def pozadinska_sinhronizacija():
     
     conn = sqlite3.connect(BAZA_NAME)
     cursor = conn.cursor()
-    
-    # ISPRAVLJENO: Koristi se klasičan INSERT umesto REPLACE da bi se sačuvala istorija svih sajtova
     cursor.execute("""
         INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (artikal_id, ime_artikla, cena_na_ekranu, sajt, trenutni_link, trenutno_vreme))
     conn.commit()
     
-    # Pretraga jeftinije alternative za isti taj SKU sa drugih sajtova
     cursor.execute("""
         SELECT nadjena_cena, sajt_izvora, link_proizvoda FROM skenirano_trziste 
-        WHERE artikal_id = ? AND sajt_izvora != ? AND nadjena_cena < ?
+        WHERE artikal_id = ? AND sajt_izvora != ? AND sajt_izvora NOT LIKE 'amazon.com%' AND nadjena_cena < ?
         ORDER BY nadjena_cena ASC LIMIT 1
     """, (artikal_id, sajt, cena_na_ekranu))
     
@@ -80,8 +76,8 @@ def pozadinska_sinhronizacija():
     conn.close()
     
     if nadjena_jeftinija_ponuda:
-        cena_jeftinijeg = nadjena_jeftinija_ponuda[0]
-        link_jeftinijeg = nadjena_jeftinija_ponuda[2]
+        cena_jeftinijeg = nadjena_jeftinija_ponuda
+        link_jeftinijeg = nadjena_jeftinija_ponuda
         
         proracun = izracunaj_vortex_cenu(cena_na_ekranu, cena_jeftinijeg)
         if proracun["validno"]:
@@ -95,12 +91,15 @@ def pozadinska_sinhronizacija():
             
     return jsonify({"akcija": "nastavi_skeniranje"})
 
+# POPRAVLJENO: Sinhrona ruta koja drži konekciju otvorenom dok robot ne završi pretragu
 @app.route("/api/vortex-probudi-robota", methods=["GET"])
 def probudi_pozadinskog_robota():
     from vortex_robot import pokreni_masovno_rudarenje
-    import threading
-    threading.Thread(target=pokreni_masovno_rudarenje).start()
-    return jsonify({"status": "robot_je_pokrenut_u_pozadini"})
+    try:
+        rezultat_robota = pokreni_masovno_rudarenje()
+        return jsonify({"status": "robot_je_zavrsio_pretragu", "detalji": rezultat_robota})
+    except Exception as e:
+        return jsonify({"status": "greska_u_radu_robota", "poruka": str(e)})
 
 @app.route("/api/vortex-mobilna-porudzbina", methods=["POST"])
 def mobilna_porudzbina():

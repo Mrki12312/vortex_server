@@ -4,27 +4,20 @@ import requests
 import urllib.parse
 from bs4 import BeautifulSoup
 
-# Tvoj aktivni Scrape.do token
 API_TOKEN = "bbf0475d54b54e9cad14c084f462da7152b49164592"
 BAZA_NAME = "vortex_network_v2.db"
 
 def pokreni_amazon_skreper_za_proizvod(pun_naziv, artikal_id):
-    """
-    Profesionalni robot koji preko Scrape.do zaobilazi zaštitu Amazona.
-    Ako ne nađe proizvod, upisuje obaveštenje na panel.
-    """
     siguran_naziv = urllib.parse.quote(pun_naziv)
     target_url = f"https://amazon.com{siguran_naziv}"
     api_url = f"https://scrape.do{API_TOKEN}&url={target_url}"
-    
-    print(f"[VORTEX ROBOT] Pokrećem API pretragu na Amazonu za: {pun_naziv[:30]}")
     
     try:
         odgovor = requests.get(api_url, timeout=30)
         trenutno_vreme = datetime.datetime.now()
         
         if odgovor.status_code != 200:
-            return False
+            return f"Greška proksija: status {odgovor.status_code}"
             
         supa = BeautifulSoup(odgovor.text, "html.parser")
         kartica = supa.find("div", {"data-component-type": "s-search-result"})
@@ -42,11 +35,8 @@ def pokreni_amazon_skreper_za_proizvod(pun_naziv, artikal_id):
                 ceo_deo = "".join(c for c in element_cene.get_text() if c.isdigit())
                 centi_deo = "".join(c for c in element_centi.get_text() if c.isdigit()) if element_centi else "00"
                 
-                if not ceo_deo: ceo_deo = "0"
-                
-                cena_dolar = float(f"{ceo_deo}.{centi_deo}")
+                cena_dolar = float(f"{ceo_deo or 0}.{centi_deo}")
                 cena_rsd = round(cena_dolar * 108.0, 2)
-                
                 puni_link = "https://amazon.com" + element_linka["href"]
                 ime_sa_amazona = element_naslova.get_text().strip()
                 
@@ -55,28 +45,27 @@ def pokreni_amazon_skreper_za_proizvod(pun_naziv, artikal_id):
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (artikal_id, ime_sa_amazona[:100], cena_rsd, "amazon.com (Vortex Robot)", puni_link, trenutno_vreme))
                 conn.commit()
-                print(f"[VORTEX ROBOT] USPEH! Model {artikal_id} dodat sa Amazona.")
+                conn.close()
+                return f"Uspeh! Upisana cena {cena_rsd} RSD za model {artikal_id}"
             else:
-                # Ako elementi cene nisu ispravni
                 cursor.execute("""
                     INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (artikal_id, f"Greška u formatu cene za: {pun_naziv[:20]}", 0, "amazon.com (Nema Cene)", target_url, trenutno_vreme))
+                """, (artikal_id, f"Format cene nevažeći za: {pun_naziv[:20]}", 0, "amazon.com (Nema Cene)", target_url, trenutno_vreme))
                 conn.commit()
+                conn.close()
+                return "Artikal nađen, ali struktura cene na Amazonu je nečitljiva."
         else:
-            # SLUČAJ KADA AMAZON NEMA TAJ ARTIKAL: Upisujemo obaveštenje na panel
             cursor.execute("""
                 INSERT INTO skenirano_trziste (artikal_id, ime, nadjena_cena, sajt_izvora, link_proizvoda, vreme_skena)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (artikal_id, f"Proizvod nije lociran na američkom tržištu", 0, "amazon.com (Nema na stanju)", target_url, trenutno_vreme))
+            """, (artikal_id, "Proizvod nije lociran na američkom tržištu", 0, "amazon.com (Nema na stanju)", target_url, trenutno_vreme))
             conn.commit()
-            print("[VORTEX ROBOT] Amazon nema ovaj proizvod u ponudi.")
+            conn.close()
+            return "Amazon je vratio praznu stranicu za ovaj pojam."
             
-        conn.close()
-        return True
     except Exception as e:
-        print(f"[VORTEX ROBOT GRESKA] Greška: {e}")
-    return False
+        return f"Sistemski prekid rada robota: {str(e)}"
 
 def pokreni_masovno_rudarenje():
     conn = sqlite3.connect(BAZA_NAME)
@@ -91,10 +80,10 @@ def pokreni_masovno_rudarenje():
     conn.close()
     
     if not artikal:
-        return
+        return "Baza podataka na serveru je potpuno prazna."
         
     artikal_id, pun_naziv = artikal
     reci = pun_naziv.split()
-    # Uzimamo prve 3 reči (čist brend) jer to drastično povećava šansu da Amazon izbaci bilo kakav rezultat
     skraceni_naziv = " ".join(reci[:3]) if len(reci) > 3 else pun_naziv
-    pokreni_amazon_skreper_za_proizvod(skraceni_naziv, artikal_id)
+    
+    return pokreni_amazon_skreper_za_proizvod(skraceni_naziv, artikal_id)
